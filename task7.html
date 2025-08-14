@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fetch & Display Users — Fetch API Demo</title>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#fff; --muted:#6b7280; --accent:#2563eb; --err:#d9534f;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+    }
+    body{
+      margin:0;
+      padding:32px;
+      background:linear-gradient(180deg,var(--bg),#fff);
+      display:flex;
+      justify-content:center;
+    }
+    .container{
+      width:100%;
+      max-width:900px;
+      background:var(--card);
+      border-radius:12px;
+      box-shadow:0 8px 30px rgba(15,23,42,0.07);
+      padding:22px;
+    }
+    header{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h1{ margin:0; font-size:20px; }
+    p.lead{ margin:6px 0 18px 0; color:var(--muted); font-size:14px; }
+
+    .controls{ display:flex; gap:8px; align-items:center; }
+    button{ background:var(--accent); color:#fff; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; }
+    button.secondary{ background:#eef2ff; color:var(--accent); border:1px solid #e6e9ef; }
+    button:disabled{ opacity:0.6; cursor:not-allowed; }
+
+    .status{ margin-left:12px; font-weight:600; }
+    .status.loading{ color:var(--accent); }
+    .status.error{ color:var(--err); }
+
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(auto-fill,minmax(260px,1fr));
+      gap:12px;
+      margin-top:18px;
+    }
+    .card{
+      background:#fafbff;
+      padding:12px;
+      border-radius:10px;
+      border:1px solid #eef2ff;
+    }
+    .name{ font-weight:700; margin-bottom:6px; }
+    .meta{ font-size:13px; color:var(--muted); margin-bottom:6px; }
+    .address{ font-size:13px; color:#243248; }
+
+    .empty{ padding:24px; text-align:center; color:var(--muted); }
+    .debug{ margin-top:12px; font-family:monospace; font-size:12px; color:#53617a; }
+
+    @media (max-width:560px){
+      .controls{ flex-direction:column; align-items:flex-start; gap:6px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container" role="main" aria-labelledby="mainTitle">
+    <header>
+      <div>
+        <h1 id="mainTitle">Users from JSONPlaceholder</h1>
+        <p class="lead">Fetches user list from <code>https://jsonplaceholder.typicode.com/users</code> and displays name, email, and address.</p>
+      </div>
+      <div class="controls" role="toolbar" aria-label="controls">
+        <button id="reloadBtn" title="Fetch users again">Reload</button>
+        <button id="clearBtn" class="secondary" title="Clear displayed users">Clear</button>
+        <span id="status" class="status" aria-live="polite"></span>
+      </div>
+    </header>
+
+    <section id="output" aria-live="polite" class="grid" aria-label="user list">
+      <div class="empty" id="empty">Click <strong>Reload</strong> to fetch users.</div>
+    </section>
+
+    <div class="debug" id="debug"></div>
+  </main>
+
+  <script>
+  (function(){
+    const API = 'https://jsonplaceholder.typicode.com/users';
+    const reloadBtn = document.getElementById('reloadBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const output = document.getElementById('output');
+    const statusEl = document.getElementById('status');
+    const debug = document.getElementById('debug');
+
+    // Keep AbortController to cancel in-flight requests when reloading
+    let controller = null;
+
+    // Render helpers
+    function showStatus(text, kind){
+      statusEl.textContent = text || '';
+      statusEl.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    function renderUsers(users){
+      output.innerHTML = '';
+      if(!Array.isArray(users) || users.length === 0){
+        output.innerHTML = '<div class="empty">No users to show.</div>';
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      users.forEach(u => {
+        const c = document.createElement('article');
+        c.className = 'card';
+        const address = `${u.address.suite}, ${u.address.street}, ${u.address.city} (${u.address.zipcode})`;
+        c.innerHTML = `
+          <div class="name">${escapeHtml(u.name)}</div>
+          <div class="meta">${escapeHtml(u.email)}</div>
+          <div class="address">${escapeHtml(address)}</div>
+        `;
+        fragment.appendChild(c);
+      });
+      output.appendChild(fragment);
+    }
+
+    // Small HTML escape for debug safety
+    function escapeHtml(s){
+      return String(s)
+        .replaceAll('&','&amp;')
+        .replaceAll('<','&lt;')
+        .replaceAll('>','&gt;')
+        .replaceAll('"','&quot;')
+        .replaceAll("'",'&#039;');
+    }
+
+    // Clear display
+    clearBtn.addEventListener('click', () => {
+      if(controller){
+        // optionally abort if user clears during fetch
+        controller.abort();
+        controller = null;
+      }
+      output.innerHTML = '<div class="empty">Display cleared. Click <strong>Reload</strong> to fetch again.</div>';
+      showStatus('', '');
+      debug.textContent = '';
+    });
+
+    // Main fetch logic
+    async function fetchUsers(){
+      // Abort previous fetch if any
+      if(controller){
+        try { controller.abort(); } catch(e) { /* ignore */ }
+      }
+      controller = new AbortController();
+      const { signal } = controller;
+
+      // UI changes
+      reloadBtn.disabled = true;
+      showStatus('Loading...', 'loading');
+      debug.textContent = '';
+
+      try {
+        const res = await fetch(API, { signal });
+
+        // fetch() only rejects on network errors or when aborted.
+        // check HTTP status explicitly.
+        if(!res.ok){
+          throw new Error('Server responded with ' + res.status + ' ' + res.statusText);
+        }
+
+        // parse JSON body
+        const users = await res.json();
+
+        // basic validation of returned shape
+        if(!Array.isArray(users)){
+          throw new Error('Unexpected response format');
+        }
+
+        renderUsers(users);
+        showStatus('Loaded ' + users.length + ' users.', ''); // success style is default text
+        debug.textContent = 'Last fetch: ' + new Date().toLocaleString();
+      } catch(err){
+        // distinguish AbortError from network/server errors
+        if(err.name === 'AbortError'){
+          showStatus('Fetch aborted.', 'error');
+          debug.textContent = 'Fetch aborted at: ' + new Date().toLocaleTimeString();
+        } else {
+          showStatus('Error fetching users', 'error');
+          // friendly error card
+          output.innerHTML = '<div class="empty">Unable to fetch users. Check network and try again.</div>';
+          debug.textContent = 'Error: ' + (err && err.message ? err.message : err);
+          console.error('fetchUsers error', err);
+        }
+      } finally {
+        reloadBtn.disabled = false;
+        // clear controller if done (not aborted earlier)
+        controller = null;
+      }
+    }
+
+    // Hook reload button
+    reloadBtn.addEventListener('click', () => {
+      fetchUsers();
+    });
+
+    // Optional: automatically fetch on page load
+    // fetchUsers();
+
+    // For demo/testing: allow pressing "r" to reload
+    document.addEventListener('keydown', (e) => {
+      if(e.key === 'r' && !e.metaKey && !e.ctrlKey){
+        fetchUsers();
+      }
+    });
+
+  })();
+  </script>
+</body>
+</html>
